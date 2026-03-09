@@ -53,6 +53,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *provider.Auth, req pr
 	from := opts.SourceFormat
 	body, err := stream.TranslateToCodex(e.Cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
+		log.Errorf("[CODEX DEBUG] TranslateToCodex failed: %v", err)
 		return resp, err
 	}
 
@@ -63,14 +64,20 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *provider.Auth, req pr
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+	log.Infof("[CODEX DEBUG] Execute request - model: %s, url: %s, body: %s", req.Model, url, string(body))
+
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
 	if err != nil {
+		log.Errorf("[CODEX DEBUG] cacheHelper failed: %v", err)
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey)
+	log.Infof("[CODEX DEBUG] Using apiKey length: %d, auth.ID: %s", len(apiKey), auth.ID)
+
 	httpClient := e.NewHTTPClient(ctx, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		log.Errorf("[CODEX DEBUG] HTTP request failed: %v", err)
 		if errors.Is(err, context.DeadlineExceeded) {
 			return resp, executor.NewTimeoutError("request timed out")
 		}
@@ -83,21 +90,30 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *provider.Auth, req pr
 	}()
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		result := executor.HandleHTTPError(httpResp, "codex executor")
+		log.Errorf("[CODEX DEBUG] HTTP error status: %d, error: %v", httpResp.StatusCode, result.Error)
 		return resp, result.Error
 	}
 	data, err := io.ReadAll(httpResp.Body)
 	if err != nil {
+		log.Errorf("[CODEX DEBUG] Read response body failed: %v", err)
 		return resp, err
 	}
 
+	log.Infof("[CODEX DEBUG] Response data length: %d, content: %s", len(data), string(data))
+
 	lines := bytes.Split(data, []byte("\n"))
-	for _, line := range lines {
+	log.Infof("[CODEX DEBUG] Response split into %d lines", len(lines))
+
+	for i, line := range lines {
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
 
 		line = bytes.TrimSpace(line[5:])
-		if gjson.GetBytes(line, "type").String() != "response.completed" {
+		eventType := gjson.GetBytes(line, "type").String()
+		log.Infof("[CODEX DEBUG] Line %d event type: %s", i, eventType)
+
+		if eventType != "response.completed" {
 			continue
 		}
 
@@ -106,10 +122,13 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *provider.Auth, req pr
 		}
 
 		fromFormat := provider.FromString("codex")
+		log.Infof("[CODEX DEBUG] Translating response from codex to %s", from)
 		translatedResp, err := stream.TranslateResponseNonStream(e.Cfg, fromFormat, from, line, req.Model)
 		if err != nil {
+			log.Errorf("[CODEX DEBUG] TranslateResponseNonStream failed: %v", err)
 			return resp, err
 		}
+		log.Infof("[CODEX DEBUG] Translated response: %s", string(translatedResp))
 		if translatedResp != nil {
 			resp = provider.Response{Payload: translatedResp}
 		} else {
@@ -117,6 +136,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *provider.Auth, req pr
 		}
 		return resp, nil
 	}
+	log.Errorf("[CODEX DEBUG] No response.completed event found in %d lines", len(lines))
 	err = executor.NewStatusError(408, "stream error: stream disconnected before completion: stream closed before response.completed", nil)
 	return resp, err
 }

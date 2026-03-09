@@ -9,6 +9,8 @@ import (
 	"github.com/nghyane/llm-mux/internal/translator/ir"
 )
 
+var _ = fmt.Sprintf // prevent unused import
+
 type OpenAIRequestFormat int
 
 const (
@@ -374,17 +376,23 @@ func ToOpenAIChatCompletionCandidates(cs []ir.CandidateResult, us *ir.Usage, mod
 		res["service_tier"] = meta.ServiceTier
 	}
 	var chs []any
-	for _, c := range cs {
+	fmt.Printf("[CODEX DEBUG] ToOpenAIChatCompletionCandidates: %d candidates, model=%s\n", len(cs), model)
+	for i, c := range cs {
+		fmt.Printf("[CODEX DEBUG] Candidate %d: %d messages\n", i, len(c.Messages))
 		if len(c.Messages) == 0 {
+			fmt.Printf("[CODEX DEBUG] Candidate %d: no messages, skipping\n", i)
 			continue
 		}
 		b := ir.NewResponseBuilder(c.Messages, us, model, false)
 		m := b.GetLastMessage()
 		if m == nil {
+			fmt.Printf("[CODEX DEBUG] Candidate %d: GetLastMessage returned nil\n", i)
 			continue
 		}
+		fmt.Printf("[CODEX DEBUG] Candidate %d: last message role=%s, content parts=%d\n", i, m.Role, len(m.Content))
 		mc := map[string]any{"role": string(m.Role)}
 		t, tcs := b.GetTextContent(), b.BuildOpenAIToolCalls()
+		fmt.Printf("[CODEX DEBUG] Candidate %d: text content length=%d, tool calls=%v\n", i, len(t), tcs)
 		if t != "" {
 			mc["content"] = t
 		} else if tcs != nil {
@@ -403,6 +411,7 @@ func ToOpenAIChatCompletionCandidates(cs []ir.CandidateResult, us *ir.Usage, mod
 		chs = append(chs, co)
 	}
 	res["choices"] = chs
+	fmt.Printf("[CODEX DEBUG] Final choices count: %d\n", len(chs))
 	if us != nil {
 		res["usage"] = buildUsageMap(us, meta)
 	}
@@ -416,7 +425,9 @@ func ToOpenAIChatCompletionCandidates(cs []ir.CandidateResult, us *ir.Usage, mod
 			}
 		}
 	}
-	return json.Marshal(res)
+	result, _ := json.Marshal(res)
+	fmt.Printf("[CODEX DEBUG] Response JSON: %s\n", string(result))
+	return result, nil
 }
 
 func ToOpenAIChatCompletionMeta(ms []ir.Message, us *ir.Usage, model, mid string, meta *ir.OpenAIMeta) ([]byte, error) {

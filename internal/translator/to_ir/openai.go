@@ -8,6 +8,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/nghyane/llm-mux/internal/json"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/nghyane/llm-mux/internal/misc"
 	"github.com/nghyane/llm-mux/internal/translator/ir"
 )
@@ -261,14 +262,26 @@ func parseResponsesContentPart(p gjson.Result) *ir.ContentPart {
 func ParseOpenAIResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
 	root, err := ir.ParseAndValidateJSON(rawJSON)
 	if err != nil {
+		log.Errorf("[CODEX DEBUG] ParseOpenAIResponse: JSON parse error: %v", err)
 		return nil, nil, err
 	}
 	usage := ir.ParseOpenAIUsage(root.Get("usage"))
+	// Check for Responses API format (Codex returns this in response.completed event)
+	// The response data is wrapped in {"type": "response.completed", "response": {...}}
+	respWrapper := root.Get("response")
+	if respWrapper.Exists() && respWrapper.Get("output").IsArray() {
+		log.Infof("[CODEX DEBUG] ParseOpenAIResponse: found Responses API wrapped format")
+		usage = ir.ParseOpenAIUsage(respWrapper.Get("usage"))
+		return parseResponsesAPIOutput(respWrapper.Get("output"), usage)
+	}
+	// Check for direct Responses API format
 	if v := root.Get("output"); v.IsArray() {
+		log.Infof("[CODEX DEBUG] ParseOpenAIResponse: found direct Responses API format")
 		return parseResponsesAPIOutput(v, usage)
 	}
 
 	m := root.Get("choices.0.message")
+	log.Infof("[CODEX DEBUG] ParseOpenAIResponse: choices.0.message exists: %v", m.Exists())
 	if !m.Exists() {
 		return nil, usage, nil
 	}
@@ -285,6 +298,7 @@ func ParseOpenAIResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
 	msg.ToolCalls = append(msg.ToolCalls, ir.ParseOpenAIStyleToolCalls(m.Get("tool_calls").Array())...)
 	msg.Refusal = m.Get("refusal").String()
 
+	log.Infof("[CODEX DEBUG] ParseOpenAIResponse: content parts=%d, tool_calls=%d, refusal=%s", len(msg.Content), len(msg.ToolCalls), msg.Refusal)
 	if len(msg.Content) == 0 && len(msg.ToolCalls) == 0 && msg.Refusal == "" {
 		return nil, usage, nil
 	}
@@ -293,8 +307,12 @@ func ParseOpenAIResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
 
 func parseResponsesAPIOutput(output gjson.Result, usage *ir.Usage) ([]ir.Message, *ir.Usage, error) {
 	var res []ir.Message
-	for _, item := range output.Array() {
-		switch item.Get("type").String() {
+	items := output.Array()
+	log.Infof("[CODEX DEBUG] parseResponsesAPIOutput: %d items", len(items))
+	for i, item := range items {
+		itemType := item.Get("type").String()
+		log.Infof("[CODEX DEBUG] parseResponsesAPIOutput item %d: type=%s", i, itemType)
+		switch itemType {
 		case "message":
 			m := ir.Message{Role: ir.RoleAssistant, Refusal: item.Get("refusal").String()}
 			for _, c := range item.Get("content").Array() {
@@ -302,6 +320,7 @@ func parseResponsesAPIOutput(output gjson.Result, usage *ir.Usage) ([]ir.Message
 					m.Content = append(m.Content, ir.ContentPart{Type: ir.ContentTypeText, Text: c.Get("text").String()})
 				}
 			}
+			log.Infof("[CODEX DEBUG] parseResponsesAPIOutput message: content parts=%d, refusal=%s", len(m.Content), m.Refusal)
 			if len(m.Content) > 0 || m.Refusal != "" {
 				res = append(res, m)
 			}
@@ -312,6 +331,7 @@ func parseResponsesAPIOutput(output gjson.Result, usage *ir.Usage) ([]ir.Message
 					m.Content = append(m.Content, ir.ContentPart{Type: ir.ContentTypeReasoning, Reasoning: s.Get("text").String()})
 				}
 			}
+			log.Infof("[CODEX DEBUG] parseResponsesAPIOutput reasoning: content parts=%d", len(m.Content))
 			if len(m.Content) > 0 {
 				res = append(res, m)
 			}
@@ -319,6 +339,7 @@ func parseResponsesAPIOutput(output gjson.Result, usage *ir.Usage) ([]ir.Message
 			res = append(res, ir.Message{Role: ir.RoleAssistant, ToolCalls: []ir.ToolCall{{ID: item.Get("call_id").String(), Name: item.Get("name").String(), Args: item.Get("arguments").String()}}})
 		}
 	}
+	log.Infof("[CODEX DEBUG] parseResponsesAPIOutput: returning %d messages", len(res))
 	return res, usage, nil
 }
 
