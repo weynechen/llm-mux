@@ -288,7 +288,12 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	}
 
 	if len(providers) == 0 {
-		return nil, "", nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: fmt.Errorf("unknown provider for model %s", modelName)}
+		// Fallback: for GPT/Codex models not in registry, use codex provider
+		if strings.HasPrefix(normalizedModel, "gpt-") {
+			providers = []string{"codex"}
+		} else {
+			return nil, "", nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: fmt.Errorf("unknown provider for model %s", modelName)}
+		}
 	}
 	return providers, normalizedModel, metadata, nil
 }

@@ -123,7 +123,13 @@ func registerModelsForAuth(a *provider.Auth, cfg *config.Config, wsGateway *wsre
 		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
-		models = registry.GetOpenAIModels()
+		// Try dynamic fetch first, fallback to static
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		models = providers.FetchCodexModels(ctx, a, cfg)
+		cancel()
+		if len(models) == 0 {
+			models = registry.GetOpenAIModels()
+		}
 		if entry := resolveProvider(a, cfg, config.ProviderTypeOpenAI); entry != nil {
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels

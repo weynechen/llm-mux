@@ -15,6 +15,7 @@ import (
 	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/nghyane/llm-mux/internal/misc"
 	"github.com/nghyane/llm-mux/internal/provider"
+	"github.com/nghyane/llm-mux/internal/registry"
 	"github.com/nghyane/llm-mux/internal/runtime/executor"
 	"github.com/nghyane/llm-mux/internal/runtime/executor/stream"
 	"github.com/nghyane/llm-mux/internal/sseutil"
@@ -580,4 +581,80 @@ func applyCodexHeaders(r *http.Request, auth *provider.Auth, token string) {
 
 func codexCreds(a *provider.Auth) (apiKey, baseURL string) {
 	return executor.ExtractCreds(a, executor.CodexCredsConfig)
+}
+
+// FetchCodexModels fetches available models from the Codex/OpenAI API.
+// It returns a list of models that are available for the given auth.
+func FetchCodexModels(ctx context.Context, auth *provider.Auth, cfg *config.Config) []*registry.ModelInfo {
+	apiKey, baseURL := codexCreds(auth)
+	if apiKey == "" {
+		return nil
+	}
+	if baseURL == "" {
+		baseURL = executor.CodexDefaultBaseURL
+	}
+
+	httpClient := executor.NewProxyAwareHTTPClient(ctx, cfg, auth, 0)
+
+	url := strings.TrimSuffix(baseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		log.Errorf("FetchCodexModels: failed to create request: %v", err)
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	executor.SetCommonHeaders(req, "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Errorf("FetchCodexModels: failed to fetch models: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Errorf("FetchCodexModels: unexpected status code: %d", resp.StatusCode)
+		return nil
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Errorf("FetchCodexModels: failed to read response body: %v", err)
+		return nil
+	}
+
+	// Parse OpenAI models response
+	root := gjson.ParseBytes(data)
+	modelsArr := root.Get("data").Array()
+	if len(modelsArr) == 0 {
+		log.Debugf("FetchCodexModels: no models found in response")
+		return nil
+	}
+
+	var models []*registry.ModelInfo
+	for _, m := range modelsArr {
+		modelID := m.Get("id").String()
+		if modelID == "" {
+			continue
+		}
+		// Filter for GPT/Codex models only
+		if !strings.HasPrefix(modelID, "gpt-") && !strings.HasPrefix(modelID, "codex-") {
+			continue
+		}
+
+		model := &registry.ModelInfo{
+			ID:       modelID,
+			Object:   "model",
+			OwnedBy:  m.Get("owned_by").String(),
+			Type:     "codex",
+			Created:  m.Get("created").Int(),
+		}
+		if model.OwnedBy == "" {
+			model.OwnedBy = "openai"
+		}
+		models = append(models, model)
+	}
+
+	log.Debugf("FetchCodexModels: fetched %d models", len(models))
+	return models
 }
