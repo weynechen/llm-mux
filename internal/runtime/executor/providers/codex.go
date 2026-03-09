@@ -584,20 +584,21 @@ func codexCreds(a *provider.Auth) (apiKey, baseURL string) {
 	return executor.ExtractCreds(a, executor.CodexCredsConfig)
 }
 
-// FetchCodexModels fetches available models from the Codex/OpenAI API.
+// FetchCodexModels fetches available models from the OpenAI API.
 // It returns a list of models that are available for the given auth.
+// Note: Codex uses a special base URL that doesn't support /models endpoint,
+// so we use the standard OpenAI API endpoint instead.
 func FetchCodexModels(ctx context.Context, auth *provider.Auth, cfg *config.Config) []*registry.ModelInfo {
-	apiKey, baseURL := codexCreds(auth)
+	apiKey, _ := codexCreds(auth)
 	if apiKey == "" {
 		return nil
-	}
-	if baseURL == "" {
-		baseURL = executor.CodexDefaultBaseURL
 	}
 
 	httpClient := executor.NewProxyAwareHTTPClient(ctx, cfg, auth, 0)
 
-	url := strings.TrimSuffix(baseURL, "/") + "/models"
+	// Use standard OpenAI API endpoint for models list
+	// Codex base URL (chatgpt.com/backend-api/codex) doesn't support /models
+	url := "https://api.openai.com/v1/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		log.Errorf("FetchCodexModels: failed to create request: %v", err)
@@ -614,7 +615,8 @@ func FetchCodexModels(ctx context.Context, auth *provider.Auth, cfg *config.Conf
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Errorf("FetchCodexModels: unexpected status code: %d", resp.StatusCode)
+		// Codex tokens often can't access standard OpenAI API, silently return nil to use static fallback
+		log.Debugf("FetchCodexModels: unexpected status code: %d, using static fallback", resp.StatusCode)
 		return nil
 	}
 
