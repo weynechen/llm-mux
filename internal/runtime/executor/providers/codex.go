@@ -159,6 +159,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *provider.Auth, 
 
 	body = e.setReasoningEffortByAlias(req.Model, body)
 	body = e.ApplyPayloadConfig(req.Model, body)
+	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
